@@ -3,7 +3,7 @@ from pathlib import Path
 import sys
 import pygame
 
-from bounce_climber.config import (
+from ..config import (
     COOLDOWN_FRAMES,
     FLICKER_INTERVAL,
     GRAVITY,
@@ -14,7 +14,7 @@ from bounce_climber.config import (
     SPIN_SPEED_DEGREES,
     WIDTH,
 )
-from bounce_climber.sprite_fx import add_outline
+from ..sprite_fx import add_outline
 
 # --- UPDATED ASSET PATH LOGIC ---
 if getattr(sys, 'frozen', False):

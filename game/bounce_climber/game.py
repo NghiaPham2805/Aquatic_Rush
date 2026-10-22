@@ -1,10 +1,11 @@
+import asyncio
 import random
 import sys
 from pathlib import Path
 
 import pygame
 
-from bounce_climber.config import (
+from .config import (
     BASE_SCROLL_SPEED,
     BUBBLE_COLOR,
     BUBBLE_COUNT,
@@ -21,11 +22,13 @@ from bounce_climber.config import (
     TEXT_COLOR,
     WIDTH,
 )
-from bounce_climber.entities.coin import Coin
-from bounce_climber.entities.obstacle import Obstacle
-from bounce_climber.entities.player import Player
-from bounce_climber.entities.particle import Particle
-from bounce_climber.entities.eel import Eel
+from .entities.coin import Coin
+from .entities.obstacle import Obstacle
+from .entities.player import Player
+from .entities.particle import Particle
+from .entities.eel import Eel
+#from app.bounce_climber.leaderboard import submit_score_async, get_top_scores
+#import threading
 
 DIRECTION_KEYS = (pygame.K_LEFT, pygame.K_a, pygame.K_RIGHT, pygame.K_d, pygame.K_SPACE)
 HEART_SIZE = 28
@@ -35,11 +38,11 @@ MODE_INFINITE = "infinite"
 
 # --- UPDATED ASSET PATH LOGIC ---
 if getattr(sys, 'frozen', False):
-    # If built as a PyInstaller .exe, look for assets next to the executable
-    ASSETS_DIR = Path(sys.executable).resolve().parent / "assets"
+    # If built as a PyInstaller .exe
+    ASSETS_DIR = Path(sys.executable).parent / "assets"
 else:
-    # If running normally in VS Code, look relative to this file
-    ASSETS_DIR = Path(__file__).resolve().parent / "assets"
+    # If running normally in VS Code or Browser
+    ASSETS_DIR = Path(__file__).parent / "assets"
 # --------------------------------
 
 
@@ -47,49 +50,42 @@ class Game:
     """Owns all game state and runs the main loop for Vertical Bounce Climber."""
 
     def __init__(self):
+        print("DEBUG A: Starting pygame.init()")
         pygame.init()
-        pygame.joystick.init()
-        self.joysticks = [pygame.joystick.Joystick(i) for i in range(pygame.joystick.get_count())]
-        
-        pygame.mixer.init()
-        
-        
-        # Boost audio channels from default (8) to 32 so sounds never cancel out!
-        pygame.mixer.set_num_channels(32) 
-        
-        def load_sound(filename, vol=0.5):
-            try:
-                s = pygame.mixer.Sound(str(ASSETS_DIR / filename))
-                s.set_volume(vol)
-                return s
-            except FileNotFoundError:
-                return None
 
-        self.crash_sound = load_sound("crash.wav", 0.2)
-        self.lose_sound = load_sound("lose.wav", 0.4)
-        self.coin_sound = load_sound("coin.wav", 0.15)
-        self.menu_click = load_sound("menu_click.wav", 0.5)
-        self._play_music("lobby_bgm.mp3")
-
-        
-
+        # 1. ALWAYS initialize the display FIRST in WebAssembly!
+        print("DEBUG B: Setting display mode")
         self.screen = pygame.display.set_mode((WIDTH, HEIGHT))
         pygame.display.set_caption(GAME_TITLE)
         self.clock = pygame.time.Clock()
-        self.font = pygame.font.Font(ASSETS_DIR / "PressStart2P.ttf", 12)
-        self.title_font = pygame.font.Font(ASSETS_DIR / "PressStart2P.ttf", 30)
-        self.heart_image = self._load_heart_image()
         self.render_surface = pygame.Surface((WIDTH, HEIGHT))
+
+        # 2. Prepare audio placeholders (we will unlock audio on first key press)
+        self.audio_initialized = False
+        self.crash_sound = None
+        self.lose_sound = None
+        self.coin_sound = None
+        self.menu_click = None
+        self.pending_music = "lobby_bgm.mp3"
+
+        # 3. Load Fonts & Images (Always wrap Path in str() for WASM compatibility)
+        print("DEBUG C: Loading fonts and heart image")
+        self.font = pygame.font.Font(str(ASSETS_DIR / "PressStart2P.ttf"), 12)
+        self.title_font = pygame.font.Font(str(ASSETS_DIR / "PressStart2P.ttf"), 30)
+        self.heart_image = self._load_heart_image()
+        
         self.bubbles = self._make_bubbles()
         self.shake_timer = 0
         self.particles = []
+        self.waiting_for_initials = False
+        self.player_initials = ""
 
-
-       # Load and scale our 3 background variants
+        # 4. Load and scale our 3 background variants
+        print("DEBUG D: Loading backgrounds")
         bg_files = ["background.png", "background2.png", "background3.png"]
         self.bg_images = []
         for file in bg_files:
-            raw = pygame.image.load(ASSETS_DIR / file).convert()
+            raw = pygame.image.load(str(ASSETS_DIR / file)).convert()
             w, h = raw.get_size()
             scale_ratio = WIDTH / w
             bg_h = int(h * scale_ratio)
@@ -97,29 +93,27 @@ class Game:
         
         self.bg_height = bg_h 
         
-        # Track assigned tiles per camera height chunk
-        import random
         self.assigned_bg_chunks = {
             -1: random.choice(self.bg_images),
              0: random.choice(self.bg_images),
              1: random.choice(self.bg_images)
         }
 
-        # --- NEW: Menu and Difficulty States ---
+        # Menu and Difficulty States
         self.in_menu = True
-        self.menu_stage = "MODE"  # Can be "MODE" or "DIFFICULTY"
+        self.menu_stage = "MODE"
         self.difficulty_levels = ["Easy", "Normal", "Hard", "Impossible"]
-        self.diff_idx = 1         # Default to Normal
+        self.diff_idx = 1
         self.difficulty_name = "Normal"
         self.mode = MODE_CLASSIC
-        # ---------------------------------------
 
-        # --- NEW: Heart Tracking ---
+        # Heart Tracking
         self.hearts = []
-        # Spawn the first heart 1500-2000 pixels above the start (150-200 meters)
         self.highest_heart_y = -random.randint(3000, 5000)
         
+        print("DEBUG E: Running initial reset()")
         self.reset()
+        print("DEBUG F: Game.__init__() complete!")
 
     def _load_heart_image(self):
         raw = pygame.image.load(str(ASSETS_DIR / "heart.png")).convert_alpha()
@@ -209,11 +203,10 @@ class Game:
 
         self._generate_obstacles()
         self._generate_coins()
-        self._generate_obstacles()
-        self._generate_coins()
+
         
         # --- UPDATED: Restart game BGM if restarting from a Game Over ---
-        if not self.in_menu and not pygame.mixer.music.get_busy():
+        if not self.in_menu and self.audio_initialized and not pygame.mixer.music.get_busy():
             self._play_music("bgm.mp3")
 
     def _generate_obstacles(self):
@@ -388,8 +381,23 @@ class Game:
     def handle_events(self):
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
-                pygame.quit()
-                sys.exit()
+                return  # Avoids sys.exit() crashing the browser tab
+
+            if event.type == pygame.KEYDOWN:
+                self._unlock_audio()  # Unlocks audio on the first key press
+
+            if self.waiting_for_initials:
+                if event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_RETURN and len(self.player_initials) == 3:
+                        # Submit the score and exit the input phase
+                        #submit_score_async(self.player_initials.upper(), self.score)
+                        self.waiting_for_initials = False 
+                        
+                    elif event.key == pygame.K_BACKSPACE:
+                        self.player_initials = self.player_initials[:-1]
+                        
+                    elif event.unicode.isalpha() and len(self.player_initials) < 3:
+                        self.player_initials += event.unicode.upper()
 
             # Return to the main menu from the game-over screen
             if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
@@ -397,14 +405,14 @@ class Game:
                     self.in_menu = True
                     self.menu_stage = "MODE"
                     self._play_music("lobby_bgm.mp3")
-                continue
+                    continue
 
-            is_valid_key = event.type == pygame.KEYDOWN and event.key in DIRECTION_KEYS
-            is_joy_motion = event.type == pygame.JOYAXISMOTION
-            is_joy_button = event.type == pygame.JOYBUTTONDOWN
-            
-            if not (is_valid_key or is_joy_motion or is_joy_button):
+            # Explicitly allow the Escape key to bypass this filter
+            is_valid_key = event.type == pygame.KEYDOWN and (event.key in DIRECTION_KEYS or event.key == pygame.K_ESCAPE)
+
+            if not is_valid_key:
                 continue
+            
 
             left_down, right_down = self._held_directions()
 
@@ -419,7 +427,7 @@ class Game:
                     if self.menu_stage == "MODE":
                         # Initialize options if they don't exist yet
                         if not hasattr(self, 'mode_options'):
-                            self.mode_options = ["Tutorial", "Classic", "Infinite"]
+                            self.mode_options = ["Tutorial", "Classic", "Infinite", "Leaderboard"]
                             self.mode_idx = 1 # Start on Classic
                             
                         if up_pressed:
@@ -436,6 +444,9 @@ class Game:
                             elif selected == "Infinite":
                                 self.mode = MODE_INFINITE
                                 self.menu_stage = "DIFFICULTY"
+                            elif selected == "Leaderboard":
+                                self.menu_stage = "LEADERBOARD"
+                                self._fetch_leaderboard_async()
                                 
                         elif event.key in (pygame.K_LEFT, pygame.K_a):
                             if self.menu_click: self.menu_click.play()
@@ -447,16 +458,23 @@ class Game:
                     # -----------------------------------
 
                     elif self.menu_stage == "DIFFICULTY":
-                        if up_pressed:
+                        if event.key == pygame.K_ESCAPE:
+                            self.menu_stage = "MODE"
+                            if self.menu_click: self.menu_click.play()
+                        elif up_pressed:
                             if self.menu_click: self.menu_click.play()
                             self._start_run(self.mode, self.difficulty_levels[self.diff_idx], "UP")
                         elif event.key in (pygame.K_LEFT, pygame.K_a):
                             if self.menu_click: self.menu_click.play()
-                            self.diff_idx = max(0, self.diff_idx - 1)  # Restored minus sign
+                            self.diff_idx = max(0, self.diff_idx - 1)
                         elif event.key in (pygame.K_RIGHT, pygame.K_d):
                             if self.menu_click: self.menu_click.play()
                             self.diff_idx = min(len(self.difficulty_levels) - 1, self.diff_idx + 1)
-                continue
+                            
+                    elif self.menu_stage == "LEADERBOARD":
+                        if event.key == pygame.K_ESCAPE:
+                            self.menu_stage = "MODE"
+                            if self.menu_click: self.menu_click.play()
 
             if self.game_over:
                 # Use the new up_pressed check
@@ -488,6 +506,17 @@ class Game:
         self.reset()
         self.game_started = True
         self.player.jump(direction)
+
+    def _fetch_leaderboard_async(self):
+        self.fetching_scores = True
+        self.top_scores = []
+        
+        #def fetch():
+        #    self.top_scores = get_top_scores()
+        #    self.fetching_scores = False
+            
+        #threading.Thread(target=fetch, daemon=True).start()
+        self.fetching_scores = False
 
     def update(self):
         # Decrement regardless of game state so shake doesn't get stuck once game_over is set
@@ -560,7 +589,7 @@ class Game:
                     ob.update(self.camera_y)
                 else:
                     ob.update()
-                    
+
             for p in self.particles:
                 p.update()
             self.particles = [p for p in self.particles if p.life > 0]
@@ -681,7 +710,6 @@ class Game:
         # Determine the base chunk index based on absolute camera position
         current_chunk = int(self.camera_y // self.bg_height)
         
-        import random
         # Draw the current chunk, plus one above and one below
         for chunk_offset in [-1, 0, 1]:
             chunk_index = current_chunk + chunk_offset
@@ -798,19 +826,23 @@ class Game:
         self._draw_lives(surface)
 
         if self.game_over:
-            overlay = pygame.Surface((WIDTH, HEIGHT))
-            overlay.set_alpha(150)
-            overlay.fill((0, 0, 0))
-            surface.blit(overlay, (0, 0))
+            if self.waiting_for_initials:
+                self._draw_game_over_input(surface)
+            else:
+                # Standard Game Over screen that appears AFTER initials are submitted
+                overlay = pygame.Surface((WIDTH, HEIGHT))
+                overlay.set_alpha(150)
+                overlay.fill((0, 0, 0))
+                surface.blit(overlay, (0, 0))
 
-            go_text = self.font.render("GAME OVER", True, (255, 50, 50))
-            surface.blit(go_text, (WIDTH // 2 - go_text.get_width() // 2, HEIGHT // 2 - 40))
+                go_text = self.font.render("GAME OVER", True, (255, 50, 50))
+                surface.blit(go_text, (WIDTH // 2 - go_text.get_width() // 2, HEIGHT // 2 - 40))
 
-            restart_text = self.font.render("Press A+D to Restart", True, TEXT_COLOR)
-            surface.blit(restart_text, (WIDTH // 2 - restart_text.get_width() // 2, HEIGHT // 2 + 10))
+                restart_text = self.font.render("Press A+D to Restart", True, TEXT_COLOR)
+                surface.blit(restart_text, (WIDTH // 2 - restart_text.get_width() // 2, HEIGHT // 2 + 10))
 
-            menu_text = self.font.render("Press Esc for Main Menu", True, TEXT_COLOR)
-            surface.blit(menu_text, (WIDTH // 2 - menu_text.get_width() // 2, HEIGHT // 2 + 45))
+                menu_text = self.font.render("Press Esc for Main Menu", True, TEXT_COLOR)
+                surface.blit(menu_text, (WIDTH // 2 - menu_text.get_width() // 2, HEIGHT // 2 + 45))
             
         elif not self.game_started:
             hint_text = self.font.render("Press A/D or Arrow Keys", True, TEXT_COLOR)
@@ -840,7 +872,7 @@ class Game:
             
             # Ensure the variables exist just in case draw triggers before events
             if not hasattr(self, 'mode_options'):
-                self.mode_options = ["Tutorial", "Classic", "Infinite"]
+                self.mode_options = ["Tutorial", "Classic", "Infinite", "Leaderboard"]
                 self.mode_idx = 1
                 
             # Show arrows and the current mode choice
@@ -856,6 +888,8 @@ class Game:
                 desc = "Standard game with 3 lives."
             elif current_mode == "Infinite":
                 desc = "One life. Climb forever."
+            elif current_mode == "Leaderboard":
+                desc = "View the global top 10 scores."
             else:
                 desc = ""
                 
@@ -895,27 +929,100 @@ class Game:
             # Shifted down from +70 to +95 to make room for the description
             confirm_text = self.font.render("Press A+D/Space to Confirm", True, (150, 150, 150))
             surface.blit(confirm_text, (WIDTH // 2 - confirm_text.get_width() // 2, HEIGHT // 2 + 95))
+        
+        elif self.menu_stage == "LEADERBOARD":
+            title_text = self.font.render("GLOBAL TOP 10", True, (255, 215, 0))
+            surface.blit(title_text, (WIDTH // 2 - title_text.get_width() // 2, HEIGHT // 3 - 20))
+            
+            if getattr(self, 'fetching_scores', False):
+                load_text = self.font.render("Fetching scores...", True, (200, 200, 200))
+                surface.blit(load_text, (WIDTH // 2 - load_text.get_width() // 2, HEIGHT // 2))
+            elif not getattr(self, 'top_scores', []):
+                err_text = self.font.render("No scores found.", True, (255, 50, 50))
+                surface.blit(err_text, (WIDTH // 2 - err_text.get_width() // 2, HEIGHT // 2))
+            else:
+                for i, record in enumerate(self.top_scores[:10]):
+                    name = record.get("player_name", "???")
+                    score = record.get("score", 0)
+                    row_text = self.font.render(f"{i+1}. {name} ... {score}m", True, (255, 255, 255))
+                    surface.blit(row_text, (WIDTH // 2 - row_text.get_width() // 2, HEIGHT // 3 + 30 + (i * 25)))
+                    
+            esc_text = self.font.render("Press Esc to Return", True, (150, 150, 150))
+            surface.blit(esc_text, (WIDTH // 2 - esc_text.get_width() // 2, HEIGHT - 50))
+
+    def _draw_game_over_input(self, surface):
+        overlay = pygame.Surface((WIDTH, HEIGHT))
+        overlay.set_alpha(150)
+        overlay.fill((0, 0, 0))
+        surface.blit(overlay, (0, 0))
+        
+        prompt_text = self.font.render("ENTER 3 INITIALS", True, (255, 255, 255))
+        surface.blit(prompt_text, (WIDTH // 2 - prompt_text.get_width() // 2, 200))
+        
+        initials_text = self.font.render(self.player_initials + "_", True, (255, 255, 0))
+        surface.blit(initials_text, (WIDTH // 2 - initials_text.get_width() // 2, 300))
+        
+        score_text = self.font.render(f"SCORE: {self.score}", True, (255, 255, 255))
+        surface.blit(score_text, (WIDTH // 2 - score_text.get_width() // 2, 400))
 
     # Helper method to trigger game over
     def _trigger_game_over(self):
         if not self.game_over:
             if self.lose_sound:
                 self.lose_sound.play()
+            if self.audio_initialized:
+                pygame.mixer.music.stop()
             pygame.mixer.music.stop()
             self.game_over = True
+            
+            # Trigger the text input phase
+            self.waiting_for_initials = True
+            self.player_initials = ""
 
-    # Helper method to play background music
+    def _unlock_audio(self):
+        """Initializes mixer only after the user interacts with the page."""
+        if self.audio_initialized:
+            return
+        try:
+            pygame.mixer.init()
+            pygame.mixer.set_num_channels(32)
+            self.audio_initialized = True  # only after init succeeded
+
+            def load_sound(filename, vol=0.5):
+                try:
+                    s = pygame.mixer.Sound(str(ASSETS_DIR / filename))
+                    s.set_volume(vol)
+                    return s
+                except Exception as e:
+                    print(f"Audio load skipped ({filename}): {e}")
+                    return None
+
+            self.crash_sound = load_sound("crash.wav", 0.2)
+            self.lose_sound = load_sound("lose.wav", 0.4)
+            self.coin_sound = load_sound("coin.wav", 0.15)
+            self.menu_click = load_sound("menu_click.wav", 0.5)
+
+            if self.pending_music:
+                self._play_music(self.pending_music)
+        except Exception as e:
+            print(f"Mixer init failed in browser: {e}")
+
     def _play_music(self, filename):
+        self.pending_music = filename
+        if not getattr(self, "audio_initialized", False):
+            return
         try:
             pygame.mixer.music.load(str(ASSETS_DIR / filename))
             pygame.mixer.music.set_volume(0.05)
             pygame.mixer.music.play(-1)
-        except FileNotFoundError:
-            pass
+        except Exception as e:
+            print(f"Music playback skipped ({filename}): {e}")
 
-    def run(self):
+
+    async def run(self):
         while True:
             self.handle_events()
             self.update()
             self.draw()
             self.clock.tick(FPS)
+            await asyncio.sleep(0)  # CRITICAL: This prevents the browser tab from freezing!

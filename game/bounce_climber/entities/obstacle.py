@@ -3,8 +3,8 @@ import random
 import sys
 import pygame
 
-from bounce_climber.config import WIDTH  # Make sure to import WIDTH
-from bounce_climber.sprite_fx import add_outline
+from ..config import WIDTH  # Make sure to import WIDTH
+from ..sprite_fx import add_outline
 
 # --- UPDATED ASSET PATH LOGIC ---
 if getattr(sys, 'frozen', False):

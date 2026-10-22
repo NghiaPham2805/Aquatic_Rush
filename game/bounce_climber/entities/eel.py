@@ -1,8 +1,8 @@
 # bounce_climber/entities/eel.py
 import random
 import pygame
-from bounce_climber.config import WIDTH
-from bounce_climber.entities.obstacle import Obstacle
+from ..config import WIDTH
+from .obstacle import Obstacle
 
 class Eel(Obstacle):
     def __init__(self, y, difficulty):

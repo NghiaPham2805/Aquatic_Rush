@@ -1,0 +1,27 @@
+import requests
+import threading
+
+# Replace this with your actual Vercel URL, keeping the /api at the end
+API_URL = "https://aquaticrush-aquatic-rush-api.vercel.app/api"
+
+def submit_score_async(player_name, score):
+    """Submits the score on a background thread."""
+    def send_request():
+        try:
+            payload = {"player_name": player_name, "score": score}
+            requests.post(API_URL, json=payload, timeout=5)
+            print(f"Score submitted: {player_name} - {score}")
+        except Exception as e:
+            print("Failed to submit score:", e)
+            
+    threading.Thread(target=send_request, daemon=True).start()
+
+def get_top_scores():
+    """Fetches the top 10 leaderboard."""
+    try:
+        response = requests.get(API_URL, timeout=5)
+        if response.status_code == 200:
+            return response.json()
+    except Exception as e:
+        print("Failed to fetch leaderboard:", e)
+    return []
