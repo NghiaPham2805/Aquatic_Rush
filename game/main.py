@@ -3,7 +3,7 @@ import asyncio
 import pygame
 
 async def main():
-    # Initialize Pygame and display early
+    # Initialize Pygame and display early hello
     pygame.init()
     screen = pygame.display.set_mode((1280, 720))
     pygame.display.set_caption("Bounce Game")
